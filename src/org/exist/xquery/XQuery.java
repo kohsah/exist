@@ -46,7 +46,6 @@ import org.exist.source.FileSource;
 import org.exist.source.Source;
 import org.exist.source.StringSource;
 import org.exist.storage.DBBroker;
-import org.exist.storage.XQueryPool;
 import org.exist.xquery.parser.XQueryLexer;
 import org.exist.xquery.parser.XQueryParser;
 import org.exist.xquery.parser.XQueryTreeParser;
@@ -80,27 +79,18 @@ public class XQuery {
 
         context.setSource(source);
         context.setXacmlSource(XACMLSource.getInstance(source));
-		
-        Reader reader;
-        try {
-            reader = source.getReader();
+
+        try(final Reader reader = source.getReader()) {
+            return compile(broker, context, reader, xpointer);
         } catch(final UnsupportedEncodingException e) {
             throw new XPathException(ErrorCodes.XQST0087, "unsupported encoding " + e.getMessage());
-        }
-        
-        try {
-            return compile(broker, context, reader, xpointer);
-        } finally {
-            if(reader != null) {
-                reader.close();
-            }
         }
     }
     
     private CompiledXQuery compile(final DBBroker broker, final XQueryContext context, final Reader reader, final boolean xpointer) throws XPathException, PermissionDeniedException {
         
         //check read permission
-        context.getSource().validate(broker.getSubject(), Permission.READ);
+        context.getSource().validate(broker.getCurrentSubject(), Permission.READ);
         
         
     	//TODO: move XQueryContext.getUserFromHttpSession() here, have to check if servlet.jar is in the classpath
@@ -212,7 +202,7 @@ public class XQuery {
     public Sequence execute(final DBBroker broker, final CompiledXQuery expression, final Sequence contextSequence, final Properties outputProperties, final boolean resetContext) throws XPathException, PermissionDeniedException {
     	
         //check execute permissions
-        expression.getContext().getSource().validate(broker.getSubject(), Permission.EXECUTE);
+        expression.getContext().getSource().validate(broker.getCurrentSubject(), Permission.EXECUTE);
         
         final long start = System.currentTimeMillis();
     	
@@ -246,7 +236,7 @@ public class XQuery {
         //do any preparation before execution
         context.prepareForExecution();
         
-        final Subject callingUser = broker.getSubject();
+        final Subject callingUser = broker.getCurrentSubject();
 
         //if setUid or setGid, become Effective User
         EffectiveSubject effectiveSubject = null;
@@ -271,7 +261,7 @@ public class XQuery {
         
         try {
             if(effectiveSubject != null) {
-                broker.setSubject(effectiveSubject); //switch to effective user (e.g. setuid/setgid)
+                broker.pushSubject(effectiveSubject); //switch to effective user (e.g. setuid/setgid)
             }
             
             context.getProfiler().traceQueryStart();
@@ -300,7 +290,7 @@ public class XQuery {
             
         } finally {
             if(effectiveSubject != null) {
-                broker.setSubject(callingUser);
+                broker.popSubject();
             }
         }
     }
@@ -313,7 +303,7 @@ public class XQuery {
 	
     public Sequence execute(final DBBroker broker, File file, Sequence contextSequence, AccessContext accessCtx) throws XPathException, IOException, PermissionDeniedException {
         final XQueryContext context = new XQueryContext(broker.getBrokerPool(), accessCtx);
-        final CompiledXQuery compiled = compile(broker, context, new FileSource(file, "UTF-8", true));
+        final CompiledXQuery compiled = compile(broker, context, new FileSource(file.toPath(), true));
         return execute(broker, compiled, contextSequence);
     }
 }

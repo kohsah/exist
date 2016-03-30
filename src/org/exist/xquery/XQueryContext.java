@@ -26,6 +26,7 @@ import java.io.Reader;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Path;
 import java.text.Collator;
 import java.util.ArrayList;
 import java.util.Date;
@@ -321,9 +322,16 @@ public class XQueryContext implements BinaryValueManager, Context
      * The Subject of the User that requested the execution of the XQuery
      * attached by this Context. This is not the same as the Effective User
      * as we may be executed setUid or setGid. The Effective User can be retrieved
-     * through broker.getSubject()
+     * through broker.getCurrentSubject()
      */
     private Subject realUser;
+
+    /**
+     * Indicates whether a user from a http session
+     * was pushed onto the current broker from {@link XQueryContext#prepareForExecution()},
+     * if so then we must pop the user in {@link XQueryContext#reset(boolean)}
+     */
+    private boolean pushedUserFromHttpSession = false;
 
     public synchronized Optional<ExistRepository> getRepository()
     throws XPathException {
@@ -343,7 +351,7 @@ public class XQueryContext implements BinaryValueManager, Context
             }
         }
         // try an eXist-specific module
-        File resolved = null;
+        Path resolved = null;
         if (repo.isPresent()) {
             resolved = repo.get().resolveXQueryModule(namespace);
             // use the resolved file or return null
@@ -352,7 +360,7 @@ public class XQueryContext implements BinaryValueManager, Context
             }
         }
         // build a module object from the file
-        final Source src = new FileSource(resolved, "utf-8", false);
+        final Source src = new FileSource(resolved, false);
         return compileOrBorrowModule(prefix, namespace, "", src);
     }
     // TODO: end of expath repo manager, may change
@@ -529,10 +537,11 @@ public class XQueryContext implements BinaryValueManager, Context
         //then set the DBBroker user
     	final Subject user = getUserFromHttpSession();
         if(user != null) {
-            getBroker().setSubject(user);
+            getBroker().pushSubject(user);      //this will be popped in {@link XQueryContext#reset(boolean)}
+            this.pushedUserFromHttpSession = true;
         }
-        
-        setRealUser(getBroker().getSubject());
+
+        setRealUser(getBroker().getCurrentSubject());   //this will be unset in {@link XQueryContext#reset(boolean)}
 
         //Reset current context position
         setContextSequencePosition( 0, null );
@@ -1191,7 +1200,7 @@ public class XQueryContext implements BinaryValueManager, Context
                         if( doc != null ) {
 
                             if( doc.getPermissions().validate( 
-                            		getBroker().getSubject(), Permission.READ ) ) {
+                            		getBroker().getCurrentSubject(), Permission.READ ) ) {
                                 
                             	ndocs.add( doc );
                             }
@@ -1361,7 +1370,15 @@ public class XQueryContext implements BinaryValueManager, Context
     @Override
     public void reset(final boolean keepGlobals) {
         setRealUser(null);
-        
+
+        if(this.pushedUserFromHttpSession) {
+            try {
+                getBroker().popSubject();
+            } finally {
+                this.pushedUserFromHttpSession = false;
+            }
+        }
+
         if( modifiedDocuments != null ) {
 
             try {
@@ -1426,6 +1443,8 @@ public class XQueryContext implements BinaryValueManager, Context
         attributes.clear();
 
         clearUpdateListeners();
+
+        cleanupTasks.clear();
 
         profiler.reset();
         
@@ -2139,7 +2158,7 @@ public class XQueryContext implements BinaryValueManager, Context
      * Get the user which executes the current query.
      *
      * @return  user
-     * @deprecated use getSubject
+     * @deprecated use getCurrentSubject
      */
     public Subject getUser() {
         return getSubject();
@@ -2151,7 +2170,7 @@ public class XQueryContext implements BinaryValueManager, Context
      * @return  subject
      */
     public Subject getSubject() {
-        return getBroker().getSubject();
+        return getBroker().getCurrentSubject();
     }
 
     
@@ -2740,11 +2759,11 @@ public class XQueryContext implements BinaryValueManager, Context
                                 sourceDoc = getBroker().getXMLResource( locationUri.toCollectionPathURI(), Lock.READ_LOCK );
 
                                 if(sourceDoc == null) {
-                                    throw moduleLoadException("Module location hint URI '" + location + " does not refer to anything.", location);
+                                    throw moduleLoadException("Module location hint URI '" + location + "' does not refer to anything.", location);
                                 }
 
                                 if(( sourceDoc.getResourceType() != DocumentImpl.BINARY_FILE ) || !"application/xquery".equals(sourceDoc.getMetadata().getMimeType())) {
-                                    throw moduleLoadException("Module location hint URI '" + location + " does not refer to an XQuery.", location);
+                                    throw moduleLoadException("Module location hint URI '" + location + "' does not refer to an XQuery.", location);
                                 }
 
                                 moduleSource = new DBSource( getBroker(), (BinaryDocument)sourceDoc, true );
@@ -2760,7 +2779,7 @@ public class XQueryContext implements BinaryValueManager, Context
                                 }
                             }
                         } catch(final URISyntaxException e) {
-                            throw moduleLoadException("Invalid module location hint URI '" + location + ".", location, e);
+                            throw moduleLoadException("Invalid module location hint URI '" + location + "'.", location, e);
                         }
 
                     } else {
@@ -2772,9 +2791,9 @@ public class XQueryContext implements BinaryValueManager, Context
                             moduleSource = SourceFactory.getSource( getBroker(), moduleLoadPath, location, true );
 
                         } catch(final MalformedURLException e) {
-                            throw moduleLoadException("Invalid module location hint URI '" + location + ".", location, e);
+                            throw moduleLoadException("Invalid module location hint URI '" + location + "'.", location, e);
                         } catch(final IOException e) {
-                            throw moduleLoadException("Source for module '" + namespaceURI + "' not found module location hint URI '" + location + ".", location, e);
+                            throw moduleLoadException("Source for module '" + namespaceURI + "' not found module location hint URI '" + location + "'.", location, e);
                         } catch(final PermissionDeniedException e) {
                             throw moduleLoadException("Permission denied to read module source from location hint URI '" + location + ".", location, e);
                         }
@@ -3014,7 +3033,7 @@ public class XQueryContext implements BinaryValueManager, Context
      * @return The Effective User
      */
     public Subject getEffectiveUser() {
-        return getBroker().getSubject();
+        return getBroker().getCurrentSubject();
     }
     
     /**
@@ -3398,9 +3417,11 @@ public class XQueryContext implements BinaryValueManager, Context
             declareNamespace( "xdt", Namespaces.XPATH_DATATYPES_NS );
             declareNamespace( "fn", Namespaces.XPATH_FUNCTIONS_NS );
             declareNamespace( "local", Namespaces.XQUERY_LOCAL_NS );
+            declareNamespace( Namespaces.W3C_XQUERY_XPATH_ERROR_PREFIX, Namespaces.W3C_XQUERY_XPATH_ERROR_NS );
 
             //*not* as standard NS
             declareNamespace( "exist", Namespaces.EXIST_NS );
+            declareNamespace( Namespaces.EXIST_XQUERY_XPATH_ERROR_PREFIX, Namespaces.EXIST_XQUERY_XPATH_ERROR_NS );
 
             //TODO : include "err" namespace ?
             declareNamespace( "dbgp", Debuggee.NAMESPACE_URI );
@@ -3516,27 +3537,35 @@ public class XQueryContext implements BinaryValueManager, Context
     @Override
     public void registerBinaryValueInstance(final BinaryValue binaryValue) {
         if(binaryValueInstances == null) {
-             binaryValueInstances = new ArrayList<BinaryValue>();
-             
-             cleanupTasks.add(new CleanupTask() {
-                 
-                 @Override
-                 public void cleanup(final XQueryContext context) {
-                    if(context.binaryValueInstances != null) {
-                       for(final BinaryValue bv : context.binaryValueInstances) {
-                           try {
-                               bv.close();
-                           } catch (final IOException ioe) {
-                               LOG.error("Unable to close binary value: " + ioe.getMessage(), ioe);
-                           }
-                       }
-                       context.binaryValueInstances.clear();
-                   }
-                 }
-             });
+             binaryValueInstances = new ArrayList<>();
         }
-        
+
+        if(cleanupTasks.isEmpty() || !cleanupTasks.stream().filter(ct -> ct instanceof BinaryValueCleanupTask).findFirst().isPresent()) {
+            cleanupTasks.add(new BinaryValueCleanupTask());
+        }
+
         binaryValueInstances.add(binaryValue);
+    }
+
+    /**
+     * Cleanup Task which is responsible for relasing the streams
+     * of any {@link BinaryValue} which have been used during
+     * query execution
+     */
+    private static class BinaryValueCleanupTask implements CleanupTask {
+        @Override
+        public void cleanup(final XQueryContext context) {
+            if (context.binaryValueInstances != null) {
+                for (final BinaryValue bv : context.binaryValueInstances) {
+                    try {
+                        bv.close();
+                    } catch (final IOException ioe) {
+                        LOG.error("Unable to close binary value: " + ioe.getMessage(), ioe);
+                    }
+                }
+                context.binaryValueInstances.clear();
+            }
+        }
     }
 
     @Override
@@ -3634,14 +3663,14 @@ public class XQueryContext implements BinaryValueManager, Context
 
     }
     
-    private List<CleanupTask> cleanupTasks = new ArrayList<CleanupTask>();
+    private final List<CleanupTask> cleanupTasks = new ArrayList<>();
     
     public void registerCleanupTask(final CleanupTask cleanupTask) {
         cleanupTasks.add(cleanupTask);
     }
     
     public interface CleanupTask {
-        public void cleanup(final XQueryContext context);
+        void cleanup(final XQueryContext context);
     }
     
     @Override

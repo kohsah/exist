@@ -46,6 +46,7 @@ import java.net.URL;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -109,17 +110,15 @@ public class XACMLUtil implements UpdateListener
 	}
 	protected void initializePolicyCollection()
 	{
-		DBBroker broker = null;
 		try {
-                    final BrokerPool pool = pdp.getBrokerPool();
-                    broker = pool.get(pool.getSecurityManager().getSystemSubject());
-                    initializePolicyCollection(broker);
+			final BrokerPool pool = pdp.getBrokerPool();
+			try(final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
+				initializePolicyCollection(broker);
+			}
 		} catch(final PermissionDeniedException pde) {
                     LOG.error(pde.getMessage(), pde);
                 } catch(final EXistException ee) {
 			LOG.error("Could not get broker pool to initialize policy collection", ee);
-		} finally {
-			pdp.getBrokerPool().release(broker);
 		}
 	}
 	private void initializePolicyCollection(DBBroker broker) throws PermissionDeniedException
@@ -400,12 +399,14 @@ public class XACMLUtil implements UpdateListener
 		final Element root = policyDoc.getDocumentElement();
 		final String name = root.getTagName();
 
-		if(name.equals(XACMLConstants.POLICY_SET_ELEMENT_LOCAL_NAME))
-			{return PolicySet.getInstance(root, pdp.getPDPConfig().getPolicyFinder());}
-		else if(name.equals(XACMLConstants.POLICY_ELEMENT_LOCAL_NAME))
-			{return Policy.getInstance(root);}
-		else
-			{throw new ParsingException("The root element of the policy document must be '" + XACMLConstants.POLICY_SET_ID_LOCAL_NAME + "' or '" + XACMLConstants.POLICY_SET_ID_LOCAL_NAME + "', was: '" + name + "'");}
+		switch (name) {
+			case XACMLConstants.POLICY_SET_ELEMENT_LOCAL_NAME:
+				return PolicySet.getInstance(root, pdp.getPDPConfig().getPolicyFinder());
+			case XACMLConstants.POLICY_ELEMENT_LOCAL_NAME:
+				return Policy.getInstance(root);
+			default:
+				throw new ParsingException("The root element of the policy document must be '" + XACMLConstants.POLICY_SET_ID_LOCAL_NAME + "' or '" + XACMLConstants.POLICY_SET_ID_LOCAL_NAME + "', was: '" + name + "'");
+		}
 	}
 	
 	/**

@@ -10,11 +10,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Created by wolf on 05/09/14.
+ * A literal array constructor (XQuery 3.1)
  */
 public class ArrayConstructor extends AbstractExpression {
 
-    public enum ConstructorType { SQUARE_ARRAY, CURLY_ARRAY };
+    public enum ConstructorType { SQUARE_ARRAY, CURLY_ARRAY }
 
     private ConstructorType type;
     private List<Expression> arguments = new ArrayList<Expression>();
@@ -30,6 +30,7 @@ public class ArrayConstructor extends AbstractExpression {
 
     @Override
     public void analyze(AnalyzeContextInfo contextInfo) throws XPathException {
+        contextInfo.setParent(this);
         for (Expression expr: arguments) {
             expr.analyze(contextInfo);
         }
@@ -72,7 +73,14 @@ public class ArrayConstructor extends AbstractExpression {
 
     @Override
     public void dump(ExpressionDumper dumper) {
-        dumper.display("map {");
+        dumper.display("array {");
         dumper.display('}');
+    }
+
+    @Override
+    public void accept(ExpressionVisitor visitor) {
+        for (Expression expr: arguments) {
+            expr.accept(visitor);
+        }
     }
 }

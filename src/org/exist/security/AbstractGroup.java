@@ -93,11 +93,11 @@ public abstract class AbstractGroup extends AbstractPrincipal implements Compara
         buf.append("\">");
         try {
             for(final Account manager : getManagers()) {
-                buf.append("<manager name=\"" + manager.getUsername() + "\"/>");
+                buf.append("<manager name=\"").append(manager.getUsername()).append("\"/>");
             }
         } catch(final Throwable e) {
             e.printStackTrace();
-            buf.append("<manager error=\"" + e.getMessage() + "\"/>");
+            buf.append("<manager error=\"").append(e.getMessage()).append("\"/>");
         }
         buf.append("</group>");
         
@@ -145,7 +145,7 @@ public abstract class AbstractGroup extends AbstractPrincipal implements Compara
 
     @Override
     public void addManager(final Account manager) throws PermissionDeniedException {
-    	final Subject subject = getDatabase().getSubject();
+    	final Subject subject = getDatabase().getActiveBroker().getCurrentSubject();
         assertCanModifyGroup(subject);
         
         _addManager(manager);
@@ -161,7 +161,7 @@ public abstract class AbstractGroup extends AbstractPrincipal implements Compara
     }
     
     public void addManager(final String name) throws PermissionDeniedException {
-    	final Subject subject = getDatabase().getSubject();
+        final Subject subject = getDatabase().getActiveBroker().getCurrentSubject();
         assertCanModifyGroup(subject);
         
         //check the manager is not already present`
@@ -201,7 +201,7 @@ public abstract class AbstractGroup extends AbstractPrincipal implements Compara
     @Override
     public void removeManager(final Account account) throws PermissionDeniedException {
 
-        final Account subject = getDatabase().getSubject();
+        final Subject subject = getDatabase().getActiveBroker().getCurrentSubject();
         assertCanModifyGroup(subject);
 
         for(final Reference<SecurityManager, Account> ref : managers) {

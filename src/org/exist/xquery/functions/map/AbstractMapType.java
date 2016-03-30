@@ -44,6 +44,8 @@ public abstract class AbstractMapType extends FunctionReference
 
     public abstract Sequence get(AtomicValue key);
 
+    public abstract AbstractMapType put(AtomicValue key, Sequence value) throws XPathException;
+
     public abstract boolean contains(AtomicValue key);
 
     public abstract Sequence keys();
@@ -57,7 +59,7 @@ public abstract class AbstractMapType extends FunctionReference
     @Override
     public int getItemType() {
         return Type.MAP;
-    };
+    }
 
     @Override
     public int getType() {

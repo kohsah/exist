@@ -1344,12 +1344,12 @@ public class NativeValueIndex implements ContentLoadingObserver {
         dbValues.closeAndRemove();
     }
 
-
-    public boolean close() throws DBException
+    @Override
+    public void close() throws DBException
     {
         //Use inheritance if necessary ;-)
         config.setProperty( getConfigKeyForFile(), null );
-        return( dbValues.close() );
+        dbValues.close();
     }
 
 
@@ -1381,7 +1381,7 @@ public class NativeValueIndex implements ContentLoadingObserver {
 
         public boolean matches( CharSequence term )
         {
-            return( term.toString() == expr );
+            return( term.toString().equals(expr) );
         }
     }
 

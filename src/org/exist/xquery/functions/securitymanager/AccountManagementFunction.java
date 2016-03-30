@@ -133,7 +133,7 @@ public class AccountManagementFunction extends BasicFunction {
     public Sequence eval(final Sequence[] args, final Sequence contextSequence) throws XPathException {
 
         final DBBroker broker = getContext().getBroker();
-        final Subject currentUser = broker.getSubject();
+        final Subject currentUser = broker.getCurrentSubject();
         final SecurityManager securityManager = broker.getBrokerPool().getSecurityManager();
 
         final String username = args[0].getStringValue();
@@ -214,8 +214,8 @@ public class AccountManagementFunction extends BasicFunction {
                         subGroups = getGroups(args[3]);
                     }
 
-                    for(int i = 0; i <  subGroups.length; i++) {
-                        user.addGroup(subGroups[i]);
+                    for (String subGroup : subGroups) {
+                        user.addGroup(subGroup);
                     }
 
                     //create the account

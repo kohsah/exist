@@ -84,10 +84,7 @@ public class ExportMain
             BrokerPool.configure( 1, 5, config );
             return( BrokerPool.getInstance() );
         }
-        catch( final DatabaseConfigurationException e ) {
-            System.err.println( "ERROR: Failed to open database: " + e.getMessage() );
-        }
-        catch( final EXistException e ) {
+        catch( final DatabaseConfigurationException | EXistException e ) {
             System.err.println( "ERROR: Failed to open database: " + e.getMessage() );
         }
         return( null );
@@ -179,10 +176,8 @@ public class ExportMain
             System.exit( 1 );
         }
         int      retval = 0; // return value
-        DBBroker broker = null;
 
-        try {
-            broker = pool.get(pool.getSecurityManager().getSystemSubject());
+        try(final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
             List<ErrorReport> errors  = null;
             
             if(!nocheck) {
@@ -218,9 +213,7 @@ public class ExportMain
         catch(final PermissionDeniedException pde) {
             System.err.println( "ERROR: Failed to retrieve database data: " + pde.getMessage() );
             retval = 4;
-        }
-        finally {
-            pool.release( broker );
+        } finally {
             BrokerPool.stopAll( false );
         }
         System.exit( retval );

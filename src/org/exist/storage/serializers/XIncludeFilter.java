@@ -365,7 +365,7 @@ public class XIncludeFilter implements Receiver {
                             final XmldbURI parentUri = XmldbURI.create(moduleLoadPath);
                             docUri = parentUri.append(path);
                             doc = (DocumentImpl) serializer.broker.getXMLResource(docUri);
-                            if (doc != null && !doc.getPermissions().validate(serializer.broker.getSubject(), Permission.READ)) {
+                            if (doc != null && !doc.getPermissions().validate(serializer.broker.getCurrentSubject(), Permission.READ)) {
                                 throw new PermissionDeniedException("Permission denied to read XInclude'd resource");
                             }
                         } else {
@@ -511,7 +511,7 @@ public class XIncludeFilter implements Receiver {
             if(httpConnection.getResponseCode() == HttpURLConnection.HTTP_NOT_FOUND)
             {
                 // Special case: '404'
-                return new Either.Left(new ResourceError("XInclude: no document found at URI: " + externalUri.toString()));
+                return Either.Left(new ResourceError("XInclude: no document found at URI: " + externalUri.toString()));
             }
             else if(httpConnection.getResponseCode() != HttpURLConnection.HTTP_OK)
             {
@@ -531,7 +531,7 @@ public class XIncludeFilter implements Receiver {
         reader.parse(src);
         final org.exist.dom.memtree.DocumentImpl doc = adapter.getDocument();
         doc.setDocumentURI(externalUri.toString());
-        return new Either.Right(doc);
+        return Either.Right(doc);
     }
 
     /**

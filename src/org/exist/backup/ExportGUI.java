@@ -229,24 +229,14 @@ public class ExportGUI extends javax.swing.JFrame
         startBtn.setFocusable( false );
         startBtn.setHorizontalTextPosition( javax.swing.SwingConstants.CENTER );
         startBtn.setVerticalTextPosition( javax.swing.SwingConstants.BOTTOM );
-        startBtn.addActionListener( new java.awt.event.ActionListener() {
-                public void actionPerformed( java.awt.event.ActionEvent evt )
-                {
-                    startBtncheck( evt );
-                }
-            } );
+        startBtn.addActionListener(this::startBtncheck);
         jToolBar1.add( startBtn );
 
         exportBtn.setText( "Check & Export" );
         exportBtn.setFocusable( false );
         exportBtn.setHorizontalTextPosition( javax.swing.SwingConstants.CENTER );
         exportBtn.setVerticalTextPosition( javax.swing.SwingConstants.BOTTOM );
-        exportBtn.addActionListener( new java.awt.event.ActionListener() {
-                public void actionPerformed( java.awt.event.ActionEvent evt )
-                {
-                    exportBtnActionPerformed( evt );
-                }
-            } );
+        exportBtn.addActionListener(this::exportBtnActionPerformed);
         jToolBar1.add( exportBtn );
 
         jToolBar1.add( incrementalBtn );
@@ -279,12 +269,7 @@ public class ExportGUI extends javax.swing.JFrame
         getContentPane().add( jLabel1, gridBagConstraints );
 
         btnChangeDir.setText( "Change" );
-        btnChangeDir.addActionListener( new java.awt.event.ActionListener() {
-                public void actionPerformed( java.awt.event.ActionEvent evt )
-                {
-                    btnChangeDirActionPerformed( evt );
-                }
-            } );
+        btnChangeDir.addActionListener(this::btnChangeDirActionPerformed);
         gridBagConstraints        = new java.awt.GridBagConstraints();
         gridBagConstraints.gridx  = 2;
         gridBagConstraints.gridy  = 2;
@@ -311,12 +296,7 @@ public class ExportGUI extends javax.swing.JFrame
         btnConfSelect.setMaximumSize( new java.awt.Dimension( 75, 24 ) );
         btnConfSelect.setMinimumSize( new java.awt.Dimension( 75, 24 ) );
         btnConfSelect.setPreferredSize( new java.awt.Dimension( 75, 24 ) );
-        btnConfSelect.addActionListener( new java.awt.event.ActionListener() {
-                public void actionPerformed( java.awt.event.ActionEvent evt )
-                {
-                    btnConfSelectActionPerformed( evt );
-                }
-            } );
+        btnConfSelect.addActionListener(this::btnConfSelectActionPerformed);
         gridBagConstraints        = new java.awt.GridBagConstraints();
         gridBagConstraints.gridx  = 2;
         gridBagConstraints.gridy  = 1;
@@ -328,12 +308,7 @@ public class ExportGUI extends javax.swing.JFrame
 
         menuQuit.setAccelerator( javax.swing.KeyStroke.getKeyStroke( java.awt.event.KeyEvent.VK_Q, java.awt.event.InputEvent.CTRL_MASK ) );
         menuQuit.setText( "Quit" );
-        menuQuit.addActionListener( new java.awt.event.ActionListener() {
-                public void actionPerformed( java.awt.event.ActionEvent evt )
-                {
-                    menuQuitActionPerformed( evt );
-                }
-            } );
+        menuQuit.addActionListener(this::menuQuitActionPerformed);
         jMenu1.add( menuQuit );
 
         jMenuBar1.add( jMenu1 );
@@ -356,17 +331,14 @@ public class ExportGUI extends javax.swing.JFrame
         if( !checkOutputDir() ) {
             return;
         }
-        final Runnable checkRun = new Runnable() {
-            public void run()
-            {
-                openLog( outputDir.getText() );
+        final Runnable checkRun = () -> {
+            openLog( outputDir.getText() );
 
-                try {
-                    checkDB();
-                }
-                finally {
-                    closeLog();
-                }
+            try {
+                checkDB();
+            }
+            finally {
+                closeLog();
             }
         };
         new Thread( checkRun ).start();
@@ -379,20 +351,17 @@ public class ExportGUI extends javax.swing.JFrame
         if( !checkOutputDir() ) {
             return;
         }
-        final Runnable th = new Runnable() {
-            public void run()
-            {
-                openLog( outputDir.getText() );
+        final Runnable th = () -> {
+            openLog( outputDir.getText() );
 
-                try {
-                    currentTask.setText( "Checking database consistency ..." );
-                    List<ErrorReport> errors = checkDB();
-                    currentTask.setText( "Exporting data ..." );
-                    exportDB( outputDir.getText(), errors );
-                }
-                finally {
-                    closeLog();
-                }
+            try {
+                currentTask.setText( "Checking database consistency ..." );
+                List<ErrorReport> errors = checkDB();
+                currentTask.setText( "Exporting data ..." );
+                exportDB( outputDir.getText(), errors );
+            }
+            finally {
+                closeLog();
             }
         };
         new Thread( th ).start();
@@ -462,10 +431,9 @@ public class ExportGUI extends javax.swing.JFrame
         if( !startDB() ) {
             return;
         }
-        DBBroker broker = null;
 
-        try {
-            broker = pool.get( pool.getSecurityManager().getSystemSubject() );
+        try(final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
+
             final SystemExport.StatusCallback callback = new SystemExport.StatusCallback() {
                 public void startCollection( String path )
                 {
@@ -518,7 +486,6 @@ public class ExportGUI extends javax.swing.JFrame
             System.err.println( "ERROR: Failed to retrieve database broker: " + e.getMessage() );
         }
         finally {
-            pool.release( broker );
             progress.setValue( 0 );
             currentTask.setText( " " );
         }
@@ -530,10 +497,9 @@ public class ExportGUI extends javax.swing.JFrame
         if( !startDB() ) {
             return( null );
         }
-        DBBroker broker = null;
 
-        try {
-            broker = pool.get( pool.getSecurityManager().getSystemSubject() );
+        try(final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
+
             Object[] selected     = directAccessBtn.getSelectedObjects();
             final boolean directAccess = ( selected != null ) && ( selected[0] != null );
             selected = scanBtn.getSelectedObjects();
@@ -592,17 +558,12 @@ public class ExportGUI extends javax.swing.JFrame
             progress.setString( "" );
             return( errors );
         }
-        catch( final EXistException e ) {
+        catch( final EXistException | PermissionDeniedException e ) {
             System.err.println( "ERROR: Failed to retrieve database broker: " + e.getMessage() );
-        }
-        catch (final PermissionDeniedException pde) {
-            System.err.println( "ERROR: Failed to retrieve database broker: " + pde.getMessage() );
-        }
-        catch( final TerminatedException e ) {
+        } catch( final TerminatedException e ) {
             System.err.println( "WARN: Check terminated by db." );
         }
         finally {
-            pool.release( broker );
             progress.setValue( 0 );
             currentTask.setText( " " );
         }
@@ -649,11 +610,6 @@ public class ExportGUI extends javax.swing.JFrame
      */
     public static void main( String[] args )
     {
-        java.awt.EventQueue.invokeLater( new Runnable() {
-                public void run()
-                {
-                    new ExportGUI().setVisible( true );
-                }
-            } );
+        java.awt.EventQueue.invokeLater(() -> new ExportGUI().setVisible( true ));
     }
 }

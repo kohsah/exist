@@ -154,13 +154,6 @@ public class FunctionCall extends Function {
 			context.functionEnd();
 		}
 
-        context.functionStart(functionDef.getSignature());
-        try {
-            expression.analyze(newContextInfo);
-        } finally {
-            context.functionEnd();
-        }
-
         varDeps = new VariableReference[getArgumentCount()];
         for(int i = 0; i < getArgumentCount(); i++) {
             final Expression arg = getArgument(i);
@@ -349,7 +342,7 @@ public class FunctionCall extends Function {
             } catch(final XPathException e) {
                 // append location of the function call to the exception message:
                 if(e.getLine() <= 0) {
-                    e.setLocation(line, column);
+                    e.setLocation(expression.getLine(), expression.getColumn());
                 }
     			
                 e.addFunctionCall(functionDef, this);

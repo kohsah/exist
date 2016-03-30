@@ -48,6 +48,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.charset.UnsupportedCharsetException;
 import java.util.Iterator;
 import java.util.zip.CRC32;
+import java.util.zip.DeflaterOutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -127,6 +128,12 @@ public abstract class AbstractCompressFunction extends BasicFunction
                     } else {
                         compressFromUri(os, ((AnyURIValue) item).toURI(), useHierarchy, stripOffset, "", null);
                     }
+                }
+
+                os.flush();
+
+                if(os instanceof DeflaterOutputStream) {
+                    ((DeflaterOutputStream)os).finish();
                 }
 
                 return BinaryValueFromInputStream.getInstance(context, new Base64BinaryValueType(), new ByteArrayInputStream(baos.toByteArray()));
@@ -361,13 +368,9 @@ public abstract class AbstractCompressFunction extends BasicFunction
                     os.write(value);
                 }
             }
-            catch(IOException ioe)
+            catch(IOException | SAXException ioe)
             {
                 throw new XPathException(this, ioe.getMessage(), ioe);
-            }
-            catch(SAXException saxe)
-            {
-                throw new XPathException(this, saxe.getMessage(), saxe);
             }
             finally
             {
@@ -474,9 +477,8 @@ public abstract class AbstractCompressFunction extends BasicFunction
 		// iterate over child documents
 		MutableDocumentSet childDocs = new DefaultDocumentSet();
 		col.getDocuments(context.getBroker(), childDocs);
-		for (Iterator<DocumentImpl> itChildDocs = childDocs.getDocumentIterator(); itChildDocs
-				.hasNext();) {
-			DocumentImpl childDoc = (DocumentImpl) itChildDocs.next();
+		for (Iterator<DocumentImpl> itChildDocs = childDocs.getDocumentIterator(); itChildDocs.hasNext();) {
+			DocumentImpl childDoc = itChildDocs.next();
 			childDoc.getUpdateLock().acquire(Lock.READ_LOCK);
 			try {
 				compressResource(os, childDoc, useHierarchy, stripOffset, "", null);
@@ -487,7 +489,7 @@ public abstract class AbstractCompressFunction extends BasicFunction
 		// iterate over child collections
 		for (Iterator<XmldbURI> itChildCols = col.collectionIterator(context.getBroker()); itChildCols.hasNext();) {
 			// get the child collection
-			XmldbURI childColURI = (XmldbURI) itChildCols.next();
+			XmldbURI childColURI = itChildCols.next();
 			Collection childCol = context.getBroker().getCollection(col.getURI().append(childColURI));
 			// recurse
 			compressCollection(os, childCol, useHierarchy, stripOffset);

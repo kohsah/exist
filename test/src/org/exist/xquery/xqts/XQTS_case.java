@@ -26,8 +26,11 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.Reader;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TimeZone;
 
 import junit.framework.Assert;
@@ -133,11 +136,10 @@ public class XQTS_case extends TestCase {
 //        if (testCase.equals("Constr-cont-document-3"))
 //            return; //Added by p.b. as a quick attempt to work around current blocking code
 
-        DBBroker broker = null;
         XQuery xquery = null;
 
-        try {
-            broker = db.get(db.getSecurityManager().getSystemSubject());
+        try(final DBBroker broker = db.get(Optional.of(db.getSecurityManager().getSystemSubject()))) {
+
             broker.getConfiguration().setProperty( XQueryContext.PROPERTY_XQUERY_RAISE_ERROR_ON_FAILED_RETRIEVAL, true);
 
             xquery = db.getXQueryService();
@@ -205,7 +207,7 @@ public class XQTS_case extends TestCase {
             Sequence result = null;
 
             //compile & evaluate
-            File caseScript = new File(XQTS_folder+"Queries/XQuery/"+folder, script+".xq");
+            Path caseScript = Paths.get(XQTS_folder+"Queries/XQuery/"+folder, script+".xq");
             try {
                 XQueryContext context;
 
@@ -251,7 +253,7 @@ public class XQTS_case extends TestCase {
                 if ("runtime-error".equals(scenario)) {
                 	try {
                         //compile
-                        CompiledXQuery compiled = xquery.compile(broker, context, new FileSource(caseScript, "UTF8", true));
+                        CompiledXQuery compiled = xquery.compile(broker, context, new FileSource(caseScript, true));
 
                         //execute
                         result = xquery.execute(broker, compiled, contextSequence);
@@ -285,7 +287,7 @@ public class XQTS_case extends TestCase {
                     }
                 } else {
                     //compile
-                    CompiledXQuery compiled = xquery.compile(broker, context, new FileSource(caseScript, "UTF8", true));
+                    CompiledXQuery compiled = xquery.compile(broker, context, new FileSource(caseScript, true));
 
                     //execute
                     result = xquery.execute(broker, compiled, contextSequence);
@@ -412,9 +414,7 @@ public class XQTS_case extends TestCase {
             }
         } catch (Exception e) {
             Assert.fail(e.toString());
-        } finally {
-            db.release(broker);
-        } 
+        }
     }
 
     private void fixBrokenTests(XQueryContext context, String group, String test) {

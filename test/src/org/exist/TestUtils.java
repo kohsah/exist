@@ -18,6 +18,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Iterator;
+import java.util.Optional;
+import java.util.stream.Stream;
+import org.exist.util.ConfigurationHelper;
 
 /**
  * Created by IntelliJ IDEA.
@@ -33,7 +36,7 @@ public class TestUtils {
         try {
             BrokerPool pool = BrokerPool.getInstance();
             assertNotNull(pool);
-            try(final DBBroker broker = pool.get(pool.getSecurityManager().getSystemSubject());
+            try(final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()));
                 final Txn transaction = pool.getTransactionManager().beginTransaction()) {
 
                 // Remove all collections below the /db root, except /db/system
@@ -135,4 +138,16 @@ public class TestUtils {
         Files.move(dataDirPath, lastTestRunDataDir, StandardCopyOption.ATOMIC_MOVE);
 		Files.move(backupDataDirPath, dataDirPath, StandardCopyOption.ATOMIC_MOVE);
 	}
+        
+        
+        public static void cleanupDataDir() throws IOException, DatabaseConfigurationException {
+            Configuration conf = new Configuration();
+            final Path data = (Path) conf.getProperty(BrokerPool.PROPERTY_DATA_DIR);
+
+            try(final Stream<Path> dataFiles  = Files.list(data)) {
+                dataFiles
+                        .filter(path -> !(FileUtils.fileName(path).equals("RECOVERY") || FileUtils.fileName(path).equals("README") || FileUtils.fileName(path).equals(".DO_NOT_DELETE")))
+                        .forEach(FileUtils::deleteQuietly);
+            }
+        }
 }

@@ -113,7 +113,7 @@ public abstract class AbstractAccount extends AbstractPrincipal implements Accou
             return null;
         }
 
-        final Account user = getDatabase().getSubject();
+        final Account user = getDatabase().getActiveBroker().getCurrentSubject();
         group.assertCanModifyGroup(user);
 
         if(!groups.contains(group)) {
@@ -130,7 +130,7 @@ public abstract class AbstractAccount extends AbstractPrincipal implements Accou
     @Override
     public void setPrimaryGroup(final Group group) throws PermissionDeniedException {
 
-        final Account user = getDatabase().getSubject();
+        final Account user = getDatabase().getActiveBroker().getCurrentSubject();
         group.assertCanModifyGroup(user);
 
         if(!groups.contains(group)) {
@@ -149,7 +149,7 @@ public abstract class AbstractAccount extends AbstractPrincipal implements Accou
     @Override
     public final void remGroup(final String name) throws PermissionDeniedException {
 
-        final Account subject = getDatabase().getSubject();
+        final Account subject = getDatabase().getActiveBroker().getCurrentSubject();
 
         for (final Group group : groups) {
             if (group.getName().equals(name)) {
@@ -246,20 +246,18 @@ public abstract class AbstractAccount extends AbstractPrincipal implements Accou
 
     @Override
     public boolean equals(final Object obj) {
-        final AbstractAccount other;
-        if (obj instanceof AbstractSubject) {
-            other = ((AbstractSubject) obj).account;
-        } else if (obj instanceof AbstractAccount) {
-            other = (AbstractAccount) obj;
-        } else {
-            other = null;
-        }
-
-        if (other != null){
-            return (getRealm() == other.getRealm() && name.equals(other.name));
-        } //id == other.id;
-
-        return false;
+        return Optional
+                .ofNullable(obj)
+                .flatMap(other -> {
+                    if(other instanceof AbstractSubject) {
+                        return Optional.of(((AbstractSubject)other).account);
+                    } else if(other instanceof AbstractAccount) {
+                        return Optional.of((AbstractAccount)other);
+                    } else {
+                        return Optional.empty();
+                    }
+                }).map(otherAccount -> getRealm().equals(otherAccount.getRealm()) && name.equals(otherAccount.name))
+                .orElse(false);
     }
 
     @Override

@@ -20,6 +20,7 @@
  */
 package org.exist.storage;
 
+import net.jcip.annotations.GuardedBy;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.exist.Database;
@@ -71,6 +72,11 @@ import org.expath.pkg.repo.PackageException;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.ref.Reference;
+import java.lang.reflect.Array;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -473,6 +479,14 @@ public class BrokerPool implements Database {
      */
     private final Map<Thread, DBBroker> activeBrokers = new ConcurrentHashMap<>();
 
+
+    /**
+     * Used when TRACE level logging is enabled
+     * to provide a history of broker leases
+     */
+    private Map<String, TraceableStateChanges<TraceableBrokerLeaseChange.BrokerInfo, TraceableBrokerLeaseChange.Change>> brokerLeaseChangeTrace = LOG.isTraceEnabled() ? new HashMap<>() : null;
+    private Map<String, List<TraceableStateChanges<TraceableBrokerLeaseChange.BrokerInfo, TraceableBrokerLeaseChange.Change>>> brokerLeaseChangeTraceHistory = LOG.isTraceEnabled() ? new HashMap<>() : null;
+
     /**
      * The configuration object for the database instance
      */
@@ -494,11 +508,9 @@ public class BrokerPool implements Database {
     private boolean checkpoint = false;
 
     /**
-     * <code>true</code> if the database instance is running in read-only mode.
+     * Indicates whether the database is operating in read-only mode
      */
-    //TODO : this should be computed by the DBrokers depending of their configuration/capabilities
-    //TODO : for now, this member is used for recovery management
-    private boolean isReadOnly;
+    @GuardedBy("itself") private Boolean readOnly = Boolean.FALSE;
 
     @ConfigurationFieldAsAttribute("pageSize")
     private int pageSize;
@@ -710,9 +722,10 @@ public class BrokerPool implements Database {
         //TODO : move this to initialize ? (cant as we need it for FileLockHeartBeat)
         scheduler = new QuartzSchedulerImpl(this, conf);
 
-        //TODO : since we need one :-( (see above)
-        this.isReadOnly = !canReadDataDir(conf);
-        LOG.debug("isReadOnly: " + isReadOnly);
+        if(!canReadDataDir(conf)) {
+            setReadOnly();
+        }
+
         //Configuration is valid, save it
         this.conf = conf;
 
@@ -721,8 +734,11 @@ public class BrokerPool implements Database {
             initialize();
         } catch(final Throwable e) {
             // remove that file lock we may have acquired in canReadDataDir
-            if(dataLock != null && !isReadOnly)
-                dataLock.release();
+            synchronized(readOnly) {
+                if (dataLock != null && !readOnly) {
+                    dataLock.release();
+                }
+            }
 
             if(!instances.containsKey(instanceName)) {
                 instancesInitializtionException.put(instanceName, e);
@@ -765,16 +781,14 @@ public class BrokerPool implements Database {
                 LOG.info("Data directory '" + dataDir.toAbsolutePath().toString() + "' does not exist. Creating one ...");
                 Files.createDirectories(dataDir);
             } catch(final SecurityException | IOException e) {
-                LOG.info("Cannot create data directory '" + dataDir.toAbsolutePath().toString() + "'. Switching to read-only mode.");
-                return false;
+                throw new EXistException("Cannot create data directory '" + dataDir.toAbsolutePath().toString() + "'", e);
             }
         }
 
         //Save it for further use.
-        //TODO : "data-dir" has sense for *native* brokers
         conf.setProperty(PROPERTY_DATA_DIR, dataDir);
         if(!Files.isWritable(dataDir)) {
-            LOG.info("Cannot write to data directory: " + dataDir.toAbsolutePath().toString() + ". Switching to read-only mode.");
+            LOG.warn("Cannot write to data directory: " + dataDir.toAbsolutePath().toString());
             return false;
         }
 
@@ -788,9 +802,10 @@ public class BrokerPool implements Database {
                     "database instance. Found a valid lock file: " + dataLock.getFile());
             }
         } catch(final ReadOnlyException e) {
-            LOG.info(e.getMessage() + ". Switching to read-only mode!!!");
+            LOG.warn(e);
             return false;
         }
+
         return true;
     }
 
@@ -860,14 +875,17 @@ public class BrokerPool implements Database {
                     try {
                         transactionManager.initialize();
                     } catch(final ReadOnlyException e) {
-                        LOG.warn(e.getMessage() + ". Switching to read-only mode!!!");
-                        isReadOnly = true;
+                        LOG.warn(e);
+                        setReadOnly();
                     }
                     // If the initialization fails after transactionManager has been created this method better cleans up
                     // or the FileSyncThread for the journal can/will hang.
                     try {
                         symbols = new SymbolTable(conf);
-                        isReadOnly = isReadOnly || !Files.isWritable(symbols.getFile());
+                        if(!Files.isWritable(symbols.getFile())) {
+                            LOG.warn("Symbols table is not writable: " + symbols.getFile().toAbsolutePath().toString());
+                            setReadOnly();
+                        }
 
                         try {
                             // initialize EXPath repository so indexManager and
@@ -889,8 +907,7 @@ public class BrokerPool implements Database {
                         // at this stage, the database is still single-threaded, so reusing the broker later is not a problem.
                         //DBBroker broker = inactiveBrokers.peek();
                         // dmitriy: Security issue: better to use proper get()/release() way, because of sub-processes (SecurityManager as example)
-                        final DBBroker broker = get(securityManager.getSystemSubject());
-                        try {
+                        try(final DBBroker broker = get(Optional.of(securityManager.getSystemSubject()))) {
 
                             if(isReadOnly()) {
                                 transactionManager.setEnabled(false);
@@ -1007,8 +1024,6 @@ public class BrokerPool implements Database {
                             instances.put(instanceName, this);
 
                             callStartupTriggers((List<StartupTriggerConfig>) conf.getProperty(BrokerPool.PROPERTY_STARTUP_TRIGGERS), broker);
-                        } finally {
-                            release(broker);
                         }
 
                         //Create a default configuration file for the root collection
@@ -1315,23 +1330,31 @@ public class BrokerPool implements Database {
      */
     public boolean isTransactional() {
         //TODO : confusion between dataDir and a so-called "journalDir" !
-        return !isReadOnly && transactionsEnabled;
+        synchronized(readOnly) {
+            return !readOnly && transactionsEnabled;
+        }
     }
 
+    @Override
     public boolean isReadOnly() {
-        final long freeSpace = dataLock.getFile().toFile().getUsableSpace();
-        if(freeSpace < diskSpaceMin) {
-            LOG.fatal("Partition containing DATA_DIR: " + dataLock.getFile().toAbsolutePath().toString() + " is running out of disk space. " +
-                "Switching eXist-db to read only to prevent data loss!");
-            setReadOnly();
+        synchronized(readOnly) {
+            if(!readOnly) {
+                final long freeSpace = FileUtils.measureFileStore(dataLock.getFile(), FileStore::getUsableSpace);
+                if (freeSpace < diskSpaceMin) {
+                    LOG.fatal("Partition containing DATA_DIR: " + dataLock.getFile().toAbsolutePath().toString() + " is running out of disk space. " +
+                            "Switching eXist-db to read only to prevent data loss!");
+                    setReadOnly();
+                }
+            }
+            return readOnly;
         }
-
-        return isReadOnly;
     }
 
     public void setReadOnly() {
-        LOG.info("Switching to read-only mode!!!");
-        isReadOnly = true;
+        LOG.warn("Switching database into read-only mode!");
+        synchronized (readOnly) {
+            readOnly = true;
+        }
     }
 
     public boolean isInServiceMode() {
@@ -1473,48 +1496,13 @@ public class BrokerPool implements Database {
         return broker;
     }
 
-    //Seems dangerous and redundant as you myst acquire a broker yourself first, just use broker.setUser()
-    public boolean setSubject(final Subject subject) {
-        //synchronized(this) {
-        //Try to get an active broker
-        final DBBroker broker = activeBrokers.get(Thread.currentThread());
-        if(broker != null) {
-            broker.setSubject(subject);
-            return true;
-        }
-        //}
-
-        return false;
-    }
-
-    /*
-     * Seems dangerous and redundant as you must acquire a broker yourself first, just use broker.getUser()
-     * 
-     * yes, you have to authenticate before any action
-     * try {
-     * 	broker = db.authenticate(...);
-     * 
-     * 	...actions...
-     * 
-     *  broker = db.getBroker();
-     * } finally {
-     *  db.release();
-     * }
-     */
-    public Subject getSubject() {
-        //synchronized(this) {
-        //Try to get an active broker
-        final DBBroker broker = activeBrokers.get(Thread.currentThread());
-        if(broker != null) {
-            return broker.getSubject();
-        }
-        //}
-
-        return securityManager.getGuestSubject();
-    }
-
     /**
      * Get active broker for current thread
+     *
+     * Note - If you call getActiveBroker() you must not call
+     * release on both the returned active broker and the original
+     * lease from {@link BrokerPool#getBroker()} or {@link BrokerPool#get(Optional)}
+     * otherwise release will have been called more than get!
      *
      * @return Database broker
      * @throws RuntimeException NO broker available for current thread.
@@ -1548,24 +1536,35 @@ public class BrokerPool implements Database {
         final Subject subject = getSecurityManager().authenticate(username, credentials);
 
         try {
-            return get(subject);
+            return get(Optional.ofNullable(subject));
         } catch(final Exception e) {
             throw new AuthenticationException(AuthenticationException.UNNOWN_EXCEPTION, e);
         }
     }
 
+    /**
+     * Returns an active broker for the database instance.
+     *
+     * The current user will be inherited by this broker
+     *
+     * @return The broker
+     */
     public DBBroker getBroker() throws EXistException {
-        return get(null);
+        return get(Optional.empty());
     }
 
     /**
      * Returns an active broker for the database instance.
      *
+     * @param subject Optionally a subject to set on the broker, if a user is not provided then the
+     *                current user assigned to the broker will be re-used
      * @return The broker
      * @throws EXistException If the instance is not available (stopped or not configured)
      */
     //TODO : rename as getBroker ? getInstance (when refactored) ?
-    public DBBroker get(final Subject user) throws EXistException {
+    public DBBroker get(final Optional<Subject> subject) throws EXistException {
+        Objects.requireNonNull(subject, "Subject cannot be null, use BrokerPool#getBroker() instead");
+
         if(!isInstanceConfigured()) {
             throw new EXistException("database instance '" + instanceName + "' is not available");
         }
@@ -1581,9 +1580,15 @@ public class BrokerPool implements Database {
         if(broker != null) {
             //increase its number of uses
             broker.incReferenceCount();
-            if(user != null) {
-                broker.setSubject(user);
+            broker.pushSubject(subject.orElseGet(broker::getCurrentSubject));
+
+            if(LOG.isTraceEnabled()) {
+                if(!brokerLeaseChangeTrace.containsKey(broker.getId())) {
+                    brokerLeaseChangeTrace.put(broker.getId(), new TraceableStateChanges<>());
+                }
+                brokerLeaseChangeTrace.get(broker.getId()).add(TraceableBrokerLeaseChange.get(new TraceableBrokerLeaseChange.BrokerInfo(broker.getId(), broker.getReferenceCount())));
             }
+
             return broker;
             //TODO : share the code with what is below (including notifyAll) ?
             // WM: notifyAll is not necessary if we don't have to wait for a broker.
@@ -1591,7 +1596,7 @@ public class BrokerPool implements Database {
 
         //No active broker : get one ASAP
 
-        while(serviceModeUser != null && user != null && !user.equals(serviceModeUser)) {
+        while(serviceModeUser != null && subject.isPresent() && !subject.equals(Optional.ofNullable(serviceModeUser))) {
             try {
                 LOG.debug("Db instance is in service mode. Waiting for db to become available again ...");
                 wait();
@@ -1623,48 +1628,29 @@ public class BrokerPool implements Database {
             activeBrokers.put(Thread.currentThread(), broker);
 
             if(LOG.isTraceEnabled()) {
-                LOG.trace("+++ " + Thread.currentThread() + stackTop(Thread.currentThread().getStackTrace(), 10));
+                LOG.trace("+++ " + Thread.currentThread() + Stacktrace.top(Thread.currentThread().getStackTrace(), Stacktrace.DEFAULT_STACK_TOP));
             }
-            
+
             if(watchdog != null) {
                 watchdog.add(broker);
             }
 
             broker.incReferenceCount();
-            if(user != null) {
-                broker.setSubject(user);
-            } else {
-                broker.setSubject(securityManager.getGuestSubject());
+
+            broker.pushSubject(subject.orElseGet(securityManager::getGuestSubject));
+
+            if(LOG.isTraceEnabled()) {
+                if(!brokerLeaseChangeTrace.containsKey(broker.getId())) {
+                    brokerLeaseChangeTrace.put(broker.getId(), new TraceableStateChanges<>());
+                }
+                brokerLeaseChangeTrace.get(broker.getId()).add(TraceableBrokerLeaseChange.get(new TraceableBrokerLeaseChange.BrokerInfo(broker.getId(), broker.getReferenceCount())));
             }
+
             //Inform the other threads that we have a new-comer
             // TODO: do they really need to be informed here???????
             this.notifyAll();
             return broker;
         }
-    }
-    
-    /**
-     * Gets the top N frames from the stack returns
-     * them as a string
-     * 
-     * Excludes the callee and self stack frames
-     * 
-     * @param stack The stack
-     * @param top The number of frames to examine
-     *
-     * @return String representation of the top frames of the stack
-     */
-    private String stackTop(final StackTraceElement[] stack, final int top) {
-        final StringBuilder builder = new StringBuilder();
-        final int start = 2;
-        
-        for(int i = start; i < start + top && i < stack.length; i++) {
-            builder
-                    .append(" <- ")
-                    .append(stack[i]);
-        }
-        
-        return builder.toString();
     }
 
     /**
@@ -1672,19 +1658,26 @@ public class BrokerPool implements Database {
      * If there are pending system maintenance tasks,
      * the method will block until these tasks have finished.
      *
+     * NOTE - this is intentionally package-private, it is only meant to be
+     * called internally and from {@link DBBroker#close()}
+     *
      * @param broker The broker to be released
      */
     //TODO : rename as releaseBroker ? releaseInstance (when refactored) ?
-    public void release(final DBBroker broker) {
+    void release(final DBBroker broker) {
+        Objects.requireNonNull(broker, "Cannot release nothing");
 
-        // might be null as release() is often called within a finally block
-        if(broker == null) {
-            return;
+        if(LOG.isTraceEnabled()) {
+            if(!brokerLeaseChangeTrace.containsKey(broker.getId())) {
+                brokerLeaseChangeTrace.put(broker.getId(), new TraceableStateChanges<>());
+            }
+            brokerLeaseChangeTrace.get(broker.getId()).add(TraceableBrokerLeaseChange.release(new TraceableBrokerLeaseChange.BrokerInfo(broker.getId(), broker.getReferenceCount())));
         }
 
         //first check that the broker is active ! If not, return immediately.
         broker.decReferenceCount();
         if(broker.getReferenceCount() > 0) {
+            broker.popSubject();
             //it is still in use and thus can't be marked as inactive
             return;
         }
@@ -1693,7 +1686,7 @@ public class BrokerPool implements Database {
             //Broker is no more used : inactivate it
             for(final DBBroker inactiveBroker : inactiveBrokers) {
                 if(broker == inactiveBroker) {
-                    LOG.error("Broker is already in the inactive list!!!");
+                    LOG.error("Broker " + broker.getId() + " is already in the inactive list!!!");
                     return;
                 }
             }
@@ -1711,15 +1704,42 @@ public class BrokerPool implements Database {
                 }
             } else {
                 if(LOG.isTraceEnabled()) {
-                    LOG.trace("--- " + Thread.currentThread() + stackTop(Thread.currentThread().getStackTrace(), 10));
+                    LOG.trace("--- " + Thread.currentThread() + Stacktrace.top(Thread.currentThread().getStackTrace(), Stacktrace.DEFAULT_STACK_TOP));
                 }
             }
             
-            final Subject lastUser = broker.getSubject();
-            broker.setSubject(securityManager.getGuestSubject());
+            Subject lastUser = broker.popSubject();
+
+            //guard to ensure that the broker has popped all its subjects
+            if(lastUser == null || broker.getCurrentSubject() != null) {
+                LOG.warn("Broker " + broker.getId() + " was returned with extraneous Subjects, cleaning...", new IllegalStateException("DBBroker pushSubject/popSubject mismatch").fillInStackTrace());
+                if(LOG.isTraceEnabled()) {
+                    broker.traceSubjectChanges();
+                }
+
+                //cleanup any remaining erroneous subjects
+                while(broker.getCurrentSubject() != null) {
+                    lastUser = broker.popSubject();
+                }
+            }
+
             inactiveBrokers.push(broker);
             if(watchdog != null) {
                 watchdog.remove(broker);
+            }
+
+            if(LOG.isTraceEnabled()) {
+                if(!brokerLeaseChangeTraceHistory.containsKey(broker.getId())) {
+                    brokerLeaseChangeTraceHistory.put(broker.getId(), new ArrayList<>());
+                }
+                try {
+                    brokerLeaseChangeTraceHistory.get(broker.getId()).add((TraceableStateChanges<TraceableBrokerLeaseChange.BrokerInfo, TraceableBrokerLeaseChange.Change>) brokerLeaseChangeTrace.get(broker.getId()).clone());
+                    brokerLeaseChangeTrace.get(broker.getId()).clear();
+                } catch(final CloneNotSupportedException e) {
+                    LOG.error(e);
+                }
+
+                broker.clearSubjectChangesTrace();
             }
 
             //If the database is now idle, do some useful stuff
@@ -1806,37 +1826,38 @@ public class BrokerPool implements Database {
     //TODO : make it protected ?
     public void sync(final DBBroker broker, final int syncEvent) {
         broker.sync(syncEvent);
-        final Subject user = broker.getSubject();
+
         //TODO : strange that it is set *after* the sunc method has been called.
-        broker.setSubject(securityManager.getSystemSubject());
-        if(syncEvent == Sync.MAJOR_SYNC) {
-            LOG.debug("Major sync");
-            try {
-                if(!FORCE_CORRUPTION) {
-                    transactionManager.checkpoint(checkpoint);
+        try {
+            broker.pushSubject(securityManager.getSystemSubject());
+
+            if (syncEvent == Sync.MAJOR_SYNC) {
+                LOG.debug("Major sync");
+                try {
+                    if (!FORCE_CORRUPTION) {
+                        transactionManager.checkpoint(checkpoint);
+                    }
+                } catch (final TransactionException e) {
+                    LOG.warn(e.getMessage(), e);
                 }
-            } catch(final TransactionException e) {
-                LOG.warn(e.getMessage(), e);
-            }
-            cacheManager.checkCaches();
+                cacheManager.checkCaches();
 
-            if(pluginManager != null) {
-                pluginManager.sync(broker);
-            }
+                if (pluginManager != null) {
+                    pluginManager.sync(broker);
+                }
 
-            lastMajorSync = System.currentTimeMillis();
-            if(LOG.isDebugEnabled()) {
-                notificationService.debug();
-            }
-        } else {
-            cacheManager.checkDistribution();
+                lastMajorSync = System.currentTimeMillis();
+                if (LOG.isDebugEnabled()) {
+                    notificationService.debug();
+                }
+            } else {
+                cacheManager.checkDistribution();
 //            LOG.debug("Minor sync");
+            }
+            //TODO : touch this.syncEvent and syncRequired ?
+        } finally {
+            broker.popSubject();
         }
-        //TODO : touch this.syncEvent and syncRequired ?
-
-        //After setting the SYSTEM_USER above we must change back to the DEFAULT User to prevent a security problem
-        //broker.setUser(User.DEFAULT);
-        broker.setSubject(user);
     }
 
     /**
@@ -2021,7 +2042,7 @@ public class BrokerPool implements Database {
                 //TOUNDERSTAND (pb) : shutdown() is called on only *one* broker ?
                 // WM: yes, the database files are shared, so only one broker is needed to close them for all
                 if(broker != null) {
-                    broker.setSubject(securityManager.getSystemSubject());
+                    broker.pushSubject(securityManager.getSystemSubject());
                     broker.shutdown();
                 }
                 collectionCacheMgr.deregisterCache(collectionCache);
@@ -2038,11 +2059,15 @@ public class BrokerPool implements Database {
                 //Clear the living instances container
                 instances.remove(instanceName);
 
-                if(!isReadOnly)
-                // release the lock on the data directory
-                {
-                    dataLock.release();
+                synchronized (readOnly) {
+                    if (!readOnly) {
+                        // release the lock on the data directory
+                        dataLock.release();
+                    }
                 }
+
+                //clearing additional resources, like ThreadLocal
+                clearThreadLocals();
 
                 LOG.info("shutdown complete !");
 
@@ -2081,6 +2106,51 @@ public class BrokerPool implements Database {
             shutdownListener = null;
             securityManager = null;
             notificationService = null;
+        }
+    }
+
+    private void clearThreadLocals() {
+        for (final Thread thread : Thread.getAllStackTraces().keySet()){
+            try {
+                cleanThreadLocalsForThread(thread);
+            } catch (final EXistException ex) {
+                LOG.warn("Could not clear ThreadLocals for thread: " + thread.getName());
+            }
+        }
+    }
+
+    private void cleanThreadLocalsForThread(final Thread thread) throws EXistException {
+        try {
+            // Get a reference to the thread locals table of the current thread
+            final Field threadLocalsField = Thread.class.getDeclaredField("threadLocals");
+            threadLocalsField.setAccessible(true);
+            final Object threadLocalTable = threadLocalsField.get(thread);
+
+            // Get a reference to the array holding the thread local variables inside the
+            // ThreadLocalMap of the current thread
+            final Class threadLocalMapClass = Class.forName("java.lang.ThreadLocal$ThreadLocalMap");
+            final Field tableField = threadLocalMapClass.getDeclaredField("table");
+            tableField.setAccessible(true);
+            final Object table = tableField.get(threadLocalTable);
+
+            // The key to the ThreadLocalMap is a WeakReference object. The referent field of this object
+            // is a reference to the actual ThreadLocal variable
+            final Field referentField = Reference.class.getDeclaredField("referent");
+            referentField.setAccessible(true);
+
+            for (int i = 0; i < Array.getLength(table); i++) {
+                // Each entry in the table array of ThreadLocalMap is an Entry object
+                // representing the thread local reference and its value
+                final Object entry = Array.get(table, i);
+                if (entry != null) {
+                    // Get a reference to the thread local object and remove it from the table
+                    final ThreadLocal threadLocal = (ThreadLocal)referentField.get(entry);
+                    threadLocal.remove();
+                }
+            }
+        } catch(final Exception e) {
+            // We will tolerate an exception here and just log it
+            throw new EXistException(e);
         }
     }
 
@@ -2205,4 +2275,50 @@ public class BrokerPool implements Database {
     public MetaStorage getMetaStorage() {
         return metaStorage;
     }
+
+    /**
+     * Represents a change involving {@link BrokerPool#inactiveBrokers}
+     * or {@link BrokerPool#activeBrokers} or {@link DBBroker#referenceCount}
+     *
+     * Used for tracing broker leases
+     */
+    private static class TraceableBrokerLeaseChange extends TraceableStateChange<TraceableBrokerLeaseChange.BrokerInfo, TraceableBrokerLeaseChange.Change> {
+        public enum Change {
+            GET,
+            RELEASE
+        }
+
+        public static class BrokerInfo {
+            final String id;
+            final int referenceCount;
+
+            public BrokerInfo(final String id, final int referenceCount) {
+                this.id = id;
+                this.referenceCount = referenceCount;
+            }
+        }
+
+        private TraceableBrokerLeaseChange(final Change change, final BrokerInfo brokerInfo) {
+            super(change, brokerInfo);
+        }
+
+        @Override
+        public String getId() {
+            return getState().id;
+        }
+
+        @Override
+        public String describeState() {
+            return Integer.toString(getState().referenceCount);
+        }
+
+        final static TraceableBrokerLeaseChange get(final BrokerInfo brokerInfo) {
+            return new TraceableBrokerLeaseChange(Change.GET, brokerInfo);
+        }
+
+        final static TraceableBrokerLeaseChange release(final BrokerInfo brokerInfo) {
+            return new TraceableBrokerLeaseChange(Change.RELEASE, brokerInfo);
+        }
+    }
 }
+

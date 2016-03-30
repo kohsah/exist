@@ -69,12 +69,12 @@ public class DocTypeTest {
 		DocumentImpl doc = null;
 		final TransactionManager transact = pool.getTransactionManager();
 
-		try(final DBBroker broker = pool.get(pool.getSecurityManager().getSystemSubject())) {
+		try(final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
 			final Optional<Path> existHome = pool.getConfiguration().getExistHome();
 			final Path testFile = FileUtils.resolve(existHome, "test/src/org/exist/dom/persistent/test_content.xml");
 			assertTrue(Files.isReadable(testFile));
 			
-			final InputSource is = new FileInputSource(testFile.toFile());
+			final InputSource is = new FileInputSource(testFile);
 
 			try(final Txn transaction = transact.beginTransaction()) {
                 final IndexInfo info = root.validateXMLResource(transaction, broker, XmldbURI.create("test2.xml"), is);
@@ -110,7 +110,7 @@ public class DocTypeTest {
     @Test
 	public void docType_usingString() throws Exception{
 		DocumentImpl doc = null;
-		try(final DBBroker broker = pool.get(pool.getSecurityManager().getSystemSubject())) {
+		try(final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
 
             doc = broker.getXMLResource(root.getURI().append(XmldbURI.create("test.xml")), Lock.READ_LOCK);
 
@@ -142,7 +142,7 @@ public class DocTypeTest {
         pool = startDB();
         final TransactionManager transact = pool.getTransactionManager();
 
-        try(final DBBroker broker = pool.get(pool.getSecurityManager().getSystemSubject());
+        try(final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()));
             final Txn transaction = transact.beginTransaction()) {
             
             root = broker.getOrCreateCollection(transaction, XmldbURI.create(XmldbURI.ROOT_COLLECTION + "/test"));
@@ -171,7 +171,7 @@ public class DocTypeTest {
     @After
     public void tearDown() throws PermissionDeniedException, IOException, TriggerException, EXistException {
         final TransactionManager transact = pool.getTransactionManager();
-        try(final DBBroker broker = pool.get(pool.getSecurityManager().getSystemSubject());
+        try(final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()));
             final Txn transaction = transact.beginTransaction()) {
             
             root = broker.getOrCreateCollection(transaction, XmldbURI.create(XmldbURI.ROOT_COLLECTION + "/test"));

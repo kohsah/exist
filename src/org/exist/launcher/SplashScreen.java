@@ -97,20 +97,14 @@ public class SplashScreen extends JFrame implements Observer {
     }
 
     public void setStatus(final String status) {
-        SwingUtilities.invokeLater(new Runnable() {
-            @Override
-            public void run() {
-                statusLabel.setText(status);
-            }
-        });
+        SwingUtilities.invokeLater(() -> statusLabel.setText(status));
     }
 
     public void update(Observable o, Object arg) {
         if (JettyStart.SIGNAL_STARTED.equals(arg)) {
-            launcher.signalStarted();
-
             setStatus("Server started!");
             setVisible(false);
+            launcher.signalStarted();
         } else if (BrokerPool.SIGNAL_STARTUP.equals(arg)) {
             setStatus("Starting eXist-db ...");
         } else if (BrokerPool.SIGNAL_ABORTED.equals(arg)) {

@@ -26,6 +26,7 @@ import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -68,42 +69,37 @@ public class DiskUsage implements DiskUsageMBean {
         return journalDir.map(d -> d.toAbsolutePath().toString()).orElse(NOT_CONFIGURED);
     }
 
-    private long measureFileStore(final Optional<Path> path, final FunctionE<FileStore, Long, IOException> measurement) {
-        return path.map(p -> {
-            try {
-                return measurement.apply(Files.getFileStore(p));
-            } catch(final IOException ioe) {
-                LOG.error(ioe);
-                return NO_VALUE;
-            }
-        }).orElse(NO_VALUE);
+    private long measureFileStore(final Optional<Path> path, final FunctionE<FileStore, Long, IOException> measurer) {
+        return path
+                .map(p -> FileUtils.measureFileStore(p, measurer))
+                .orElse(NO_VALUE);
     }
 
     @Override
     public long getDataDirectoryTotalSpace() {
-        return measureFileStore(dataDir, fs -> fs.getTotalSpace());
+        return measureFileStore(dataDir, FileStore::getTotalSpace);
     }
 
     @Override
     public long getDataDirectoryUsableSpace() {
-        return measureFileStore(dataDir, fs -> fs.getUsableSpace());
+        return measureFileStore(dataDir, FileStore::getUsableSpace);
     }
 
     @Override
     public long getJournalDirectoryTotalSpace() {
-        return measureFileStore(journalDir, fs -> fs.getTotalSpace());
+        return measureFileStore(journalDir, FileStore::getTotalSpace);
     }
 
     @Override
     public long getJournalDirectoryUsableSpace() {
-        return measureFileStore(journalDir, fs -> fs.getUsableSpace());
+        return measureFileStore(journalDir, FileStore::getUsableSpace);
     }
 
     @Override
     public long getDataDirectoryUsedSpace() {
         return dataDir.map(d -> {
-            try {
-                return Files.list(d)
+            try(final Stream<Path> files = Files.list(d)) {
+                return files
                         .filter(this::isDbxFile)
                         .mapToLong(p -> {
                             final long size = FileUtils.sizeQuietly(p);
@@ -120,8 +116,8 @@ public class DiskUsage implements DiskUsageMBean {
     @Override
     public long getJournalDirectoryUsedSpace() {
         return dataDir.map(d -> {
-            try {
-                return Files.list(d)
+            try(final Stream<Path> files = Files.list(d)) {
+                return files
                         .filter(this::isJournalFile)
                         .mapToLong(p -> {
                             final long size = FileUtils.sizeQuietly(p);
@@ -138,8 +134,8 @@ public class DiskUsage implements DiskUsageMBean {
     @Override
     public long getJournalDirectoryNumberOfFiles() {
         return journalDir.map(j -> {
-            try {
-                return Files.list(j)
+            try(final Stream<Path> files = Files.list(j)) {
+                return files
                         .filter(this::isJournalFile)
                         .count();
             } catch (final IOException ioe) {

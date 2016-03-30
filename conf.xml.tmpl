@@ -406,8 +406,8 @@
             Changing the parameter will only have an effect on newly loaded 
             files, not old ones.
         
-        - suppress-whitespace-mixed-content:
-            preserve the white space inside a mixed content node
+        - preserve-whitespace-mixed-content:
+            preserve the white space inside a mixed content node: "yes" or "no".
     -->
     <indexer caseSensitive="yes" index-depth="5" preserve-whitespace-mixed-content="no"
         suppress-whitespace="none">
@@ -760,12 +760,9 @@
                 EXPath Modules 
             -->
             <module uri="http://expath.org/ns/http-client" class="org.expath.exist.HttpClientModule"/>
-            <!-- old implementation of (an old draft of) the HTTP Client module -->
-            <!--module uri="http://www.expath.org/mod/http-client"
-                       src="resource:org/expath/www/mod/http-client/http-client.xqm"/-->
 
-            <!-- Native EXPath HTTPClient Module -->
-            <module uri="http://exist-db.org/xquery/httpclient" class="org.exist.xquery.modules.httpclient.HTTPClientModule" />
+            <!-- (deprecated) Native HTTPClient Module -->
+            <!-- module uri="http://exist-db.org/xquery/httpclient" class="org.exist.xquery.modules.httpclient.HTTPClientModule" /-->
             
             <!-- FTPClient Module -->
             <!--module uri="http://exist-db.org/xquery/ftpclient" class="org.exist.xquery.modules.ftpclient.FTPClientModule" /-->

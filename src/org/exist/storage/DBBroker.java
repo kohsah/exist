@@ -44,8 +44,8 @@ import org.exist.storage.btree.BTreeCallback;
 import org.exist.storage.dom.INodeIterator;
 import org.exist.storage.serializers.Serializer;
 import org.exist.storage.txn.Txn;
-import org.exist.util.Configuration;
-import org.exist.util.LockException;
+import org.exist.util.*;
+import org.exist.util.function.Tuple2;
 import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.TerminatedException;
 import org.w3c.dom.Document;
@@ -55,9 +55,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Observable;
+import java.util.*;
 
 /**
  * This is the base class for all database backends. All the basic database
@@ -99,7 +97,17 @@ public abstract class DBBroker extends Observable implements AutoCloseable {
 
     protected BrokerPool pool;
 
-    private Subject subject = null;
+    private Deque<Subject> subject = new ArrayDeque<>();
+
+    /**
+     * Used when TRACE level logging is enabled
+     * to provide a history of {@link Subject} state
+     * changes
+     *
+     * This can be written to a log file by calling
+     * {@link DBBroker#traceSubjectChanges()}
+     */
+    private TraceableStateChanges<Subject, TraceableSubjectChange.Change> subjectChangeTrace = LOG.isTraceEnabled() ? new TraceableStateChanges<>() : null;
 
     private int referenceCount = 0;
 
@@ -107,16 +115,12 @@ public abstract class DBBroker extends Observable implements AutoCloseable {
 
     protected IndexController indexController;
 
-    //TODO: remove after interface it
-    public DBBroker() {
-        //Nothing todo
-    }
-
-    public DBBroker(BrokerPool pool, Configuration config) {
+    public DBBroker(final BrokerPool pool, final Configuration config) {
         this.config = config;
         final Boolean temp = (Boolean) config.getProperty(NativeValueIndex.PROPERTY_INDEX_CASE_SENSITIVE);
-        if (temp != null)
-            {caseSensitive = temp.booleanValue();}
+        if (temp != null) {
+            caseSensitive = temp.booleanValue();
+        }
         this.pool = pool;
         initIndexModules();
     }
@@ -124,55 +128,67 @@ public abstract class DBBroker extends Observable implements AutoCloseable {
     public void initIndexModules() {
         indexController = new IndexController(this);
     }
-    
 
     /**
-     * Set the user that is currently using this DBBroker object.
+     * Change the state that the broker performs actions as
      *
-     * @param user
-     * @deprecated use setSubject
+     * @param subject The new state for the broker to perform actions as
      */
-    public void setUser(Subject user) {
-        this.subject = user;
-
-        /*
-        synchronized (this){ System.out.println("DBBroker.setUser(" +
-        user.getName() + ")"); Thread.dumpStack(); }
-         */
-        // debugging user escalation permissions problem - deliriumsky.
+    public void pushSubject(final Subject subject) {
+        if(LOG.isTraceEnabled()) {
+            subjectChangeTrace.add(TraceableSubjectChange.push(subject, getId()));
+        }
+        this.subject.addFirst(subject);
     }
 
     /**
-     * @return The user that is currently using this DBBroker object
-     * @deprecated user getSubject
-     */
-    @Deprecated
-    public Subject getUser() {
-        return getSubject();
-    }
-
-    /**
-     * Set the subject that is currently using this DBBroker object.
+     * Restore the previous state for the broker to perform actions as
      *
-     * @param subject
+     * @return The state which has been popped
      */
-    //TODO: this should be done in connection with authenticate (SecurityManager)
-    public void setSubject(final Subject subject) {
-        this.subject = subject;
-        /*
-        synchronized (this){ System.out.println("DBBroker.setUser(" +
-            user.getName() + ")"); Thread.dumpStack(); }
-        */
-        // debugging user escalation permissions problem - deliriumsky.
-    }
-
-    /**
-     * The subject that is currently using this DBBroker object
-     * 
-     * @return Subject 
-     */
-    public Subject getSubject() {
+    public Subject popSubject() {
+        final Subject subject = this.subject.removeFirst();
+        if(LOG.isTraceEnabled()) {
+            subjectChangeTrace.add(TraceableSubjectChange.pop(subject, getId()));
+        }
         return subject;
+    }
+
+    /**
+     * The state that is currently using this DBBroker object
+     * 
+     * @return The current state that the broker is executing as
+     */
+    public Subject getCurrentSubject() {
+        return subject.peekFirst();
+    }
+
+    /**
+     * Logs the details of all state changes
+     *
+     * Used for tracing privilege escalation/de-escalation
+     * during the lifetime of an active broker
+     *
+     * @throws IllegalStateException if TRACE level logging is not enabled
+     */
+    public void traceSubjectChanges() {
+        subjectChangeTrace.logTrace(LOG);
+    }
+
+    /**
+     * Clears the details of all state changes
+     *
+     * Used for tracing privilege escalation/de-escalation
+     * during the lifetime of an active broker
+     *
+     * @throws IllegalStateException if TRACE level logging is not enabled
+     */
+    public void clearSubjectChangesTrace() {
+        if(!LOG.isTraceEnabled()) {
+            throw new IllegalStateException("This is only enabled at TRACE level logging");
+        }
+
+        subjectChangeTrace.clear();
     }
 
     public IndexController getIndexController() {
@@ -417,6 +433,8 @@ public abstract class DBBroker extends Observable implements AutoCloseable {
 
     public abstract Serializer newSerializer();
 
+    public abstract Serializer newSerializer(List<String> chainOfReceivers);
+
     /**
      * Get a node with given owner document and id from the database.
      * 
@@ -445,12 +463,18 @@ public abstract class DBBroker extends Observable implements AutoCloseable {
      * 
      */
     public void removeXMLResource(Txn transaction, DocumentImpl document)
-            throws PermissionDeniedException {
+            throws PermissionDeniedException, IOException {
         removeXMLResource(transaction, document, true);
     }
 
     public abstract void removeXMLResource(Txn transaction,
-        DocumentImpl document, boolean freeDocId) throws PermissionDeniedException;
+        DocumentImpl document, boolean freeDocId) throws PermissionDeniedException, IOException;
+
+    public enum IndexMode {
+        STORE,
+        REPAIR,
+        REMOVE
+    }
 
     /**
      * Reindex a collection.
@@ -462,7 +486,9 @@ public abstract class DBBroker extends Observable implements AutoCloseable {
      * PermissionDeniedException;
      */
     public abstract void reindexCollection(XmldbURI collectionName)
-        throws PermissionDeniedException;
+            throws PermissionDeniedException, IOException;
+
+    public abstract void reindexXMLResource(final Txn transaction, final DocumentImpl doc, final IndexMode mode);
 
     /**
      * Repair indexes. Should delete all secondary indexes and rebuild them.
@@ -470,7 +496,7 @@ public abstract class DBBroker extends Observable implements AutoCloseable {
      *
      * @throws PermissionDeniedException
      */
-    public abstract void repair() throws PermissionDeniedException;
+    public abstract void repair() throws PermissionDeniedException, IOException;
 
     /**
      * Repair core indexes (dom, collections ...). This method is called immediately
@@ -660,7 +686,7 @@ public abstract class DBBroker extends Observable implements AutoCloseable {
 	 */
 	public abstract void copyResource(Txn transaction, DocumentImpl doc,
 			Collection destination, XmldbURI newName)
-			throws PermissionDeniedException, LockException, EXistException;
+            throws PermissionDeniedException, LockException, EXistException, IOException;
 
 	/**
 	 * Defragment pages of this document. This will minimize the number of split
@@ -809,13 +835,55 @@ public abstract class DBBroker extends Observable implements AutoCloseable {
     public void close() {
         pool.release(this);
     }
-    
-    @Deprecated //use close() method instead
+
+    /**
+     * @deprecated Use {@link DBBroker#close()}
+     */
+    @Deprecated
     public void release() {
         pool.release(this);
     }
-    
+
     public Txn beginTx() {
         return getDatabase().getTransactionManager().beginTransaction();
     }
+
+    /**
+     * Represents a {@link Subject} change
+     * made to a broker
+     *
+     * Used for tracing subject changes
+     */
+    private static class TraceableSubjectChange extends TraceableStateChange<Subject, TraceableSubjectChange.Change> {
+        private final String id;
+
+        public enum Change {
+            PUSH,
+            POP
+        }
+
+        private TraceableSubjectChange(final Change change, final Subject subject, final String id) {
+            super(change, subject);
+            this.id = id;
+        }
+
+        @Override
+        public String getId() {
+            return id;
+        }
+
+        @Override
+        public String describeState() {
+            return getState().getName();
+        }
+
+        final static TraceableSubjectChange push(final Subject subject, final String id) {
+            return new TraceableSubjectChange(Change.PUSH, subject, id);
+        }
+
+        final static TraceableSubjectChange pop(final Subject subject, final String id) {
+            return new TraceableSubjectChange(Change.POP, subject, id);
+        }
+    }
 }
+

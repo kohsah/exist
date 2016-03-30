@@ -37,6 +37,7 @@ import org.exist.storage.recovery.RecoveryManager;
 import org.exist.util.ReadOnlyException;
 import org.exist.xmldb.XmldbURI;
 
+import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -161,12 +162,14 @@ public class TransactionManager {
 
 			public Txn execute() {
 				final long txnId = nextTxnId++;
-                LOG.debug("Starting new transaction: " + txnId);
+                if(LOG.isDebugEnabled()) {
+                    LOG.debug("Starting new transaction: " + txnId);
+                }
                 final Txn txn = new Txn(TransactionManager.this, txnId);
 	            try {
 	                journal.writeToLog(new TxnStart(txnId));
 	            } catch (final TransactionException e) {
-	                LOG.warn("Failed to create transaction. Error writing to log file.", e);
+                    LOG.error("Failed to create transaction. Error writing to log file.", e);
 	            }
                 transactions.put(txn.getId(), new TxnCounter());
                 return txn;
@@ -194,7 +197,7 @@ public class TransactionManager {
                     try {
 						journal.writeToLog(new TxnCommit(txn.getId()));
 					} catch (final TransactionException e) {
-						LOG.error("transaction manager caught exception while committing", e);
+						LOG.error("Transaction manager caught exception while committing", e);
 					}
                     if (!groupCommit)
                         {journal.flushToLog(true);}
@@ -203,7 +206,9 @@ public class TransactionManager {
                 txn.releaseAll();
                 transactions.remove(txn.getId());
                 processSystemTasks();
-                LOG.debug("Committed transaction: " + txn.getId());
+                if(LOG.isDebugEnabled()) {
+                    LOG.debug("Committed transaction: " + txn.getId());
+                }
                 return null;
         	}
         }.run();
@@ -222,7 +227,7 @@ public class TransactionManager {
                 try {
                     journal.writeToLog(new TxnAbort(txn.getId()));
                 } catch (final TransactionException e) {
-                    LOG.warn("Failed to write abort record to journal: " + e.getMessage());
+                    LOG.error("Failed to write abort record to journal: " + e.getMessage());
                 }
                 if (!groupCommit)
                     {journal.flushToLog(true);}
@@ -249,9 +254,7 @@ public class TransactionManager {
         try {
             //if the transaction is started, then we should auto-abort the uncommitted transaction
             if (txn.getState() == Txn.State.STARTED) {
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug("Transaction was not committed or aborted, auto aborting!");
-                }
+                LOG.warn("Transaction was not committed or aborted, auto aborting!");
                 abort(txn);
             }
         } finally {
@@ -304,23 +307,21 @@ public class TransactionManager {
      * @Deprecated This mixes concerns and should not be here.
      */
     @Deprecated
-    public void reindex(DBBroker broker) {
-    	final Subject currentUser = broker.getSubject();
-    	
-        broker.setSubject(broker.getBrokerPool().getSecurityManager().getSystemSubject());
+    public void reindex(final DBBroker broker) throws IOException {
+        broker.pushSubject(broker.getBrokerPool().getSecurityManager().getSystemSubject());
         try {
             broker.reindexCollection(XmldbURI.ROOT_COLLECTION_URI);
-
         } catch (final PermissionDeniedException e) {
-            LOG.warn("Exception during reindex: " + e.getMessage(), e);
-            
+            LOG.error("Exception during reindex: " + e.getMessage(), e);
         } finally {
-        	broker.setSubject(currentUser);
+        	broker.popSubject();
         }
     }
 
     public void shutdown() {
-        LOG.debug("Shutting down transaction manager. Uncommitted transactions: " + transactions.size());
+        if(LOG.isDebugEnabled()) {
+            LOG.debug("Shutting down transaction manager. Uncommitted transactions: " + transactions.size());
+        }
         final int uncommitted = uncommittedTransaction();
         shutdown(uncommitted == 0);
     }
@@ -339,8 +340,7 @@ public class TransactionManager {
             {return count;}
         for (final Map.Entry<Long, TxnCounter> entry : transactions.entrySet()) {
             if (entry.getValue().counter > 0) {
-                LOG.warn("Found an uncommitted transaction with id " + entry.getKey() + ". Pending operations: " +
-                    entry.getValue().counter);
+                LOG.warn("Found an uncommitted transaction with id " + entry.getKey() + ". Pending operations: " + entry.getValue().counter);
                 count++;
             }
         }
@@ -383,13 +383,11 @@ public class TransactionManager {
     private abstract class RunWithLock<T> {
     	
     	public T run() {
-    		DBBroker broker = null;
-    		try {
-    			// we first need to get a broker for the current thread
-    			// before we acquire the transaction manager lock. Otherwise
-    			// a deadlock may occur.
-    			broker = pool.get(null);
-    			
+
+            // we first need to get a broker for the current thread
+            // before we acquire the transaction manager lock. Otherwise
+            // a deadlock may occur.
+    		try(final DBBroker broker = pool.getBroker()) {
     			try {
     				lock.lock();
     				return execute();
@@ -397,11 +395,9 @@ public class TransactionManager {
     				lock.unlock();
     			}
     		} catch (final EXistException e) {
-				LOG.warn("Transaction manager failed to acquire broker for running system tasks");
+				LOG.error("Transaction manager failed to acquire broker for running system tasks");
 				return null;
-			} finally {
-    			pool.release(broker);
-    		}
+			}
     	}
     	
     	public abstract T execute();
